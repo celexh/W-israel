@@ -1,0 +1,1915 @@
+--!grant Memory
+
+local version = "1"
+local tab_name = "Flee The Facility"
+local gui = rbxcli_gui
+
+local ENV = getgenv and getgenv() or shared or _G
+if ENV.__ftf then
+    pcall(ENV.__ftf)
+    ENV.__ftf = nil
+end
+
+pcall(function()
+    gui.remove_tab(tab_name)
+end)
+
+local function getService(name)
+    local ok, service = pcall(function()
+        return game:GetService(name)
+    end)
+    if ok then
+        return service
+    end
+    return nil
+end
+
+local Players = getService("Players")
+local NativeRunService = getService("RunService")
+local WorkspaceService = getService("Workspace")
+local HttpService = getService("HttpService")
+local workspace = workspace or WorkspaceService or (game and game.Workspace)
+local LocalPlayer = Players and Players.LocalPlayer or nil
+
+local rawTick = (ENV and ENV.tick) or (_G and _G.tick)
+if type(rawTick) ~= "function" then
+    rawTick = function()
+        if type(os) == "table" and type(os.clock) == "function" then
+            return os.clock()
+        end
+        if type(os) == "table" and type(os.time) == "function" then
+            return os.time()
+        end
+        return 0
+    end
+end
+local tick = rawTick
+
+local HeartbeatSignal = NativeRunService and NativeRunService.Heartbeat or nil
+local PreRenderSignal = NativeRunService and NativeRunService.PreRender or nil
+local PreSimulationSignal = NativeRunService and NativeRunService.PreSimulation or nil
+
+local keypress = input.key_down
+local keyrelease = input.key_up
+local isrbxactive = input.is_window_focused
+
+local state = { -- save captured
+    running = true,
+    connections = {},
+    threads = {},
+    controls = {},
+    labels = {},
+    CCache = {}, --
+    lastCCacheRefresh = 0,
+    MapRoot = nil,
+    lastComputerCheck = 0,
+    computerCache = {},
+    computerCacheMap = nil,
+    computerCacheScanned = false,
+    lastComputerCacheRefresh = 0,
+    freezePodCache = {},
+    freezePodCacheMap = nil,
+    freezePodCacheScanned = false,
+    lastFreezePodCacheRefresh = 0,
+    exitDoorCache = {},
+    exitDoorCacheMap = nil,
+    exitDoorCacheScanned = false,
+    lastExitDoorCacheRefresh = 0,
+    exitDoorColorCache = {},
+    FBConnection = nil,
+    FBState = nil,
+    flingOffsets = nil,
+    overlayConnection = nil,
+    fontCache = {},
+    manualMapScanActive = false,
+    lastWalkSpeedWriteAt = 0,
+    lastStatusRefresh = 0,
+    runnerKeyActive = false,
+    nextAnticapture = 0,
+    nextAb = 0,
+    nextSc = 0,
+    nextPuzzle = 0,
+    antiCaptureCollisions = nil,
+    antiCaptureCollisionCharacter = nil,
+    saveCapturedReturnCFrame = nil,
+    saveCapturedTargetUserId = nil,
+    saveCapturedReleaseAt = nil,
+    autoPuzzlePressed = false,
+    autoPuzzlePending = nil,
+    autoPuzzkeRelease = nil,
+    statusText = "Ready",
+}
+
+local function Disconnect(connection)
+    if not connection then
+        return
+    end
+    pcall(function()
+        connection:Disconnect()
+    end)
+end
+
+local function SetLabel(label, text)
+    if not label then
+        return
+    end
+    pcall(function()
+        label:set_text(tostring(text or ""))
+    end)
+    pcall(function()
+        label:set_label(tostring(text or ""))
+    end)
+end
+
+
+local function notify(message, duration)
+    message = tostring(message or "")
+    if type(rbxcli) == "table" and type(rbxcli.display_notification) == "function" then
+        pcall(rbxcli.display_notification, "Windy " .. message, tonumber(duration) or 3)
+    else
+        print("Windy ", message)
+    end
+    state.statusText = message
+    SetLabel(state.labels.status, "Status: " .. message)
+end
+
+local function getBool(id)
+    local control = state.controls[id]
+    if not control then
+        return false
+    end
+    local ok, value = pcall(function()
+        return control:get_boolean()
+    end)
+    return ok and value == true
+end
+
+local function setVisible(id, visible)
+    local control = state.controls[id]
+    if control then
+        pcall(function()
+            control:set_visible(visible == true)
+        end)
+    end
+end
+
+local function boolValue(value)
+    if value == true then
+        return true
+    end
+    if type(value) == "number" then
+        return value ~= 0
+    end
+    if type(value) == "string" then
+        local lowered = string.lower(value)
+        return lowered == "true" or lowered == "1"
+    end
+    return false
+end
+
+local function Parent(instance)
+    local ok, parent = pcall(function()
+        return instance and instance.Parent or nil
+    end)
+    if ok then
+        return parent
+    end
+    return nil
+end
+
+local function readProperty(instance, property)
+    local ok, value = pcall(function()
+        return instance and instance[property] or nil
+    end)
+    if ok then
+        return value
+    end
+    return nil
+end
+
+local function isDescendantOf(instance, ancestor)
+    local current = instance
+    while current do
+        if current == ancestor then
+            return true
+        end
+        local ok, parent = pcall(function()
+            return current.Parent
+        end)
+        if not ok then
+            return false
+        end
+        current = parent
+    end
+    return false
+end
+
+local function vec3(x, y, z)
+    if Vector3 and type(Vector3.new) == "function" then
+        return Vector3.new(x or 0, y or 0, z or 0)
+    end
+    return nil
+end
+
+local function vec2(x, y)
+    if Vector2 and type(Vector2.new) == "function" then
+        return Vector2.new(x or 0, y or 0)
+    end
+    return nil
+end
+
+local function color4(r, g, b, a)
+    a = a == nil and 1 or a
+    if Color4 and type(Color4.fromRGBA) == "function" then
+        local ok, value = pcall(Color4.fromRGBA, math.floor(r or 255), math.floor(g or 255), math.floor(b or 255), math.floor((a or 1) * 255))
+        if ok and value then
+            return value
+        end
+    end
+    if Color4 and type(Color4.new) == "function" then
+        local ok, value = pcall(Color4.new, (r or 255) / 255, (g or 255) / 255, (b or 255) / 255, a or 1)
+        if ok and value then
+            return value
+        end
+    end
+    if Color4 and type(Color4.new) == "function" then
+        local ok, value = pcall(Color4.new, r or 255, g or 255, b or 255, a or 1)
+        if ok and value then
+            return value
+        end
+    end
+    return nil
+end
+
+local EspColors = {
+    player = color4(125, 85, 255, 1),
+    beast = color4(255, 88, 88, 1),
+    pc = color4(70, 170, 255, 1),
+    pod = color4(0, 140, 255, 1),
+    door = color4(255, 225, 80, 1),
+    shadow = color4(0, 0, 0, 0.55),
+}
+
+local function getFontDescriptor(size)
+    size = tonumber(size) or 13
+    if state.fontCache[size] ~= nil then
+        return state.fontCache[size] ~= false and state.fontCache[size] or nil
+    end
+    if type(font) ~= "table" or type(font.get_font_descriptor) ~= "function" then
+        state.fontCache[size] = false
+        return nil
+    end
+    for _, name in ipairs({"Comic Sans", "Default", "Inter", "Roboto", "Arial", "Verdana"}) do
+        local ok, descriptor = pcall(font.get_font_descriptor, name, size)
+        if ok and descriptor then
+            state.fontCache[size] = descriptor
+            return descriptor
+        end
+    end
+    state.fontCache[size] = false
+    return nil
+end
+
+local function projectToScreen(target)
+    if type(rendering) ~= "table" then
+        return nil, false
+    end
+    local project = rendering.world_to_screen or rendering.worldtoscreen
+    if type(project) ~= "function" then
+        return nil, false
+    end
+    local ok, point, visible = pcall(project, target)
+    if ok and point then
+        return point, visible == true
+    end
+    return nil, false
+end
+
+local function drawText2d(x, y, text, color, size)
+    if type(immediate) ~= "table" or type(immediate.text) ~= "function" then
+        return false
+    end
+    local position = vec2(math.floor(x or 0), math.floor(y or 0))
+    local descriptor = getFontDescriptor(size or 13)
+    if not position or not descriptor then
+        return false
+    end
+    local drawColor = color or EspColors.player
+    if not drawColor then
+        return false
+    end
+    local ok, result = pcall(immediate.text, position, tostring(text or ""), descriptor, true, drawColor)
+    return ok == true and result ~= false
+end
+
+local function drawRect2d(x, y, w, h, color)
+    if type(immediate) ~= "table" or type(immediate.rectangle) ~= "function" then
+        return false
+    end
+    local firstCorner = vec2(math.floor((x or 0) + (w or 0)), math.floor((y or 0) + (h or 0)))
+    local secondCorner = vec2(math.floor(x or 0), math.floor(y or 0))
+    local drawColor = color or EspColors.player
+    if not firstCorner or not secondCorner or not drawColor then
+        return false
+    end
+    local ok, result = pcall(immediate.rectangle, firstCorner, secondCorner, 0, false, true, drawColor)
+    return ok == true and result ~= false
+end
+
+local function httpGet(url)
+    if not HttpService or type(HttpService.RequestAsync) ~= "function" then
+        return nil
+    end
+    local ok, response = pcall(function()
+        return HttpService:RequestAsync({
+            Url = url,
+            Method = "GET",
+        })
+    end)
+    if ok and type(response) == "table" and response.Success ~= false and type(response.Body) == "string" then
+        return response.Body
+    end
+    return nil
+end
+
+local function isFtfCharacterModel(model)
+    return model and model:IsA("Model") and readProperty(model, "HumanoidRootPart") ~= nil
+end
+
+local function isBeastModel(model)
+    if not model then return false end
+
+    local hammer = readProperty(model, "Hammer")
+    local handle = readProperty(hammer, "Handle")
+    if handle then
+        return true
+    end
+
+    return false
+end
+
+local function isValidFtfCharacterTarget(model)
+    return isFtfCharacterModel(model) and isDescendantOf(model, workspace)
+end
+
+local function refreshCCache(force)
+    local now = tick()
+    if not force and (now - (state.lastCCacheRefresh or 0)) < 2 then
+        return state.CCache or {}
+    end
+
+    local results = {}
+    local seen = {}
+    for _, player in ipairs(Players and Players:GetPlayers() or {}) do
+        local model = player.Character
+        if not model or not isDescendantOf(model, workspace) then
+            model = readProperty(workspace, player.Name)
+        end
+        if model and isValidFtfCharacterTarget(model) and not seen[model] then
+            seen[model] = true
+            table.insert(results, model)
+        end
+    end
+
+    state.CCache = results
+    state.lastCCacheRefresh = now
+    return results
+end
+
+local function CharacterTargets()
+    local cached = refreshCCache(false)
+    local valid = {}
+    for _, target in ipairs(cached or {}) do
+        if isValidFtfCharacterTarget(target) then
+            table.insert(valid, target)
+        end
+    end
+    if #valid > 0 then
+        return valid
+    end
+    return refreshCCache(true)
+end
+
+local function CurrentMap(force)
+    local now = tick()
+    if state.MapRoot then
+        if Parent(state.MapRoot) == workspace then
+            if not force then
+                return state.MapRoot
+            end
+        else
+            state.MapRoot = nil
+        end
+    end
+    if not force and (now - (state.lastComputerCheck or 0)) < 10 then
+        return state.MapRoot
+    end
+
+    state.lastComputerCheck = now
+    if not workspace then
+        state.MapRoot = nil
+        return nil
+    end
+
+    for _, obj in ipairs(workspace:GetChildren()) do
+        local computerTable = readProperty(obj, "ComputerTable")
+        if computerTable then
+            state.MapRoot = obj
+            return obj
+        end
+        for _, child in ipairs(obj:GetChildren()) do
+            computerTable = readProperty(child, "ComputerTable")
+            if computerTable then
+                state.MapRoot = child
+                return child
+            end
+        end
+    end
+
+    state.MapRoot = nil
+    return nil
+end
+
+local function refreshComputerCache(force)
+    local now = tick()
+    local mapRoot = CurrentMap(force)
+    if not force and state.computerCacheScanned and state.computerCacheMap == mapRoot and state.computerCache and (now - (state.lastComputerCacheRefresh or 0)) < 2 then
+        return state.computerCache
+    end
+
+    local results = {}
+    local scanRoot = mapRoot
+    if not scanRoot then
+        if state.manualMapScanActive then
+            return state.computerCache or {}
+        end
+        state.computerCache = results
+        state.computerCacheMap = nil
+        state.computerCacheScanned = true
+        state.lastComputerCacheRefresh = now
+        return results
+    end
+
+    if scanRoot.Name == "ComputerTable" then
+        local screen = readProperty(scanRoot, "Screen")
+        if not (screen and screen:IsA("BasePart")) then
+            for _, child in ipairs(scanRoot:GetChildren()) do
+                if child and child:IsA("BasePart") then
+                    screen = child
+                    break
+                end
+            end
+        end
+        if screen and screen:IsA("BasePart") then
+            table.insert(results, screen)
+        end
+    end
+
+    for _, obj in ipairs(scanRoot:GetChildren()) do
+        if obj and obj.Name == "ComputerTable" then
+            local screen = readProperty(obj, "Screen")
+            if not (screen and screen:IsA("BasePart")) then
+                for _, child in ipairs(obj:GetChildren()) do
+                    if child and child:IsA("BasePart") then
+                        screen = child
+                        break
+                    end
+                end
+            end
+            if screen and screen:IsA("BasePart") then
+                table.insert(results, screen)
+            end
+        end
+    end
+
+    state.computerCache = results
+    state.computerCacheMap = mapRoot
+    state.computerCacheScanned = true
+    state.lastComputerCacheRefresh = now
+    return results
+end
+
+local function getComputerTargets()
+    local mapRoot = CurrentMap(false)
+    if mapRoot ~= state.computerCacheMap then
+        return refreshComputerCache(true)
+    end
+    return refreshComputerCache(false)
+end
+
+local function refreshFreezePodCache(force)
+    local now = tick()
+    local mapRoot = CurrentMap(false)
+    if not force and state.freezePodCacheScanned and state.freezePodCacheMap == mapRoot and (now - (state.lastFreezePodCacheRefresh or 0)) < 2 then
+        return state.freezePodCache
+    end
+
+    local results = {}
+    local scanRoot = mapRoot
+    if not scanRoot then
+        if state.manualMapScanActive then
+            return state.freezePodCache or {}
+        end
+        state.freezePodCache = results
+        state.freezePodCacheMap = nil
+        state.freezePodCacheScanned = true
+        state.lastFreezePodCacheRefresh = now
+        return results
+    end
+
+    if scanRoot.Name == "FreezePod" then
+        local anchor = nil
+        for _, name in ipairs({ "BasePart", "PodTrigger", "Tube" }) do
+            local child = readProperty(scanRoot, name)
+            if child and child:IsA("BasePart") then
+                anchor = child
+                break
+            end
+        end
+        if not anchor then
+            for _, child in ipairs(scanRoot:GetChildren()) do
+                if child and child:IsA("BasePart") then
+                    anchor = child
+                    break
+                end
+            end
+        end
+        if anchor then
+            table.insert(results, anchor)
+        end
+    end
+
+    for _, obj in ipairs(scanRoot:GetChildren()) do
+        if obj and obj.Name == "FreezePod" then
+            local anchor = nil
+            for _, name in ipairs({ "BasePart", "PodTrigger", "Tube" }) do
+                local child = readProperty(obj, name)
+                if child and child:IsA("BasePart") then
+                    anchor = child
+                    break
+                end
+            end
+            if not anchor then
+                for _, child in ipairs(obj:GetChildren()) do
+                    if child and child:IsA("BasePart") then
+                        anchor = child
+                        break
+                    end
+                end
+            end
+            if anchor then
+                table.insert(results, anchor)
+            end
+        end
+    end
+    state.freezePodCache = results
+    state.freezePodCacheMap = mapRoot
+    state.freezePodCacheScanned = true
+    state.lastFreezePodCacheRefresh = now
+    return results
+end
+
+local function refreshExitDoorCache(force)
+    local now = tick()
+    local mapRoot = CurrentMap(false)
+    if not force and state.exitDoorCacheScanned and state.exitDoorCacheMap == mapRoot and (now - (state.lastExitDoorCacheRefresh or 0)) < 2 then
+        return state.exitDoorCache
+    end
+
+    local results = {}
+    local colors = {}
+    local scanRoot = mapRoot
+    if not scanRoot then
+        if state.manualMapScanActive then
+            return state.exitDoorCache or {}
+        end
+        state.exitDoorCache = results
+        state.exitDoorCacheMap = nil
+        state.exitDoorColorCache = colors
+        state.exitDoorCacheScanned = true
+        state.lastExitDoorCacheRefresh = now
+        return results
+    end
+
+    if scanRoot.Name == "ExitDoor" then
+        local anchor = nil
+        for _, name in ipairs({ "ExitArea", "DoorTrigger", "BasePart" }) do
+            local child = readProperty(scanRoot, name)
+            if child and child:IsA("BasePart") then
+                anchor = child
+                break
+            end
+        end
+        if not anchor then
+            for _, child in ipairs(scanRoot:GetChildren()) do
+                if child and child:IsA("BasePart") then
+                    anchor = child
+                    break
+                end
+            end
+        end
+        if anchor then
+            local light = readProperty(scanRoot, "Light")
+            table.insert(results, anchor)
+            colors[anchor] = light and light.Color or nil
+        end
+    end
+
+    for _, obj in ipairs(scanRoot:GetChildren()) do
+        if obj and obj.Name == "ExitDoor" then
+            local anchor = nil
+            for _, name in ipairs({ "ExitArea", "DoorTrigger", "BasePart" }) do
+                local child = readProperty(obj, name)
+                if child and child:IsA("BasePart") then
+                    anchor = child
+                    break
+                end
+            end
+            if not anchor then
+                for _, child in ipairs(obj:GetChildren()) do
+                    if child and child:IsA("BasePart") then
+                        anchor = child
+                        break
+                    end
+                end
+            end
+            if anchor then
+                local light = readProperty(obj, "Light")
+                table.insert(results, anchor)
+                colors[anchor] = light and light.Color or nil
+            end
+        end
+    end
+    state.exitDoorCache = results
+    state.exitDoorCacheMap = mapRoot
+    state.exitDoorColorCache = colors
+    state.exitDoorCacheScanned = true
+    state.lastExitDoorCacheRefresh = now
+    return results
+end
+
+local function getLocalCharacter()
+    return LocalPlayer and LocalPlayer.Character or nil
+end
+
+local function getLocalHumanoid()
+    local character = getLocalCharacter()
+    return readProperty(character, "Humanoid")
+end
+
+local function getLocalRoot()
+    local character = getLocalCharacter()
+    return readProperty(character, "HumanoidRootPart")
+end
+
+local function isLocalPlayerBeastNow()
+    return isBeastModel(getLocalCharacter())
+end
+
+local function canLocalPlayerAct()
+    local character = getLocalCharacter()
+    local humanoid = readProperty(character, "Humanoid")
+    local root = readProperty(character, "HumanoidRootPart")
+    if not character or not humanoid or not root then
+        return false
+    end
+
+    local health = nil
+    pcall(function()
+        health = humanoid.Health
+    end)
+    if type(health) ~= "number" then
+        local statsModule = readProperty(LocalPlayer, "TempPlayerStatsModule")
+        local healthObj = readProperty(statsModule, "Health")
+        pcall(function()
+            health = healthObj and healthObj.Value or nil
+        end)
+    end
+    if type(health) == "number" then
+        return health > 0
+    end
+    return true
+end
+
+local function getStatsValue(player, name)
+    local statsModule = readProperty(player, "TempPlayerStatsModule")
+    local valueObj = readProperty(statsModule, name)
+    if not valueObj then
+        return nil, nil
+    end
+    local ok, value = pcall(function()
+        return valueObj.Value
+    end)
+    if ok then
+        return value, valueObj
+    end
+    return nil, valueObj
+end
+
+local function getStatsBool(player, name)
+    local value = getStatsValue(player, name)
+    return boolValue(value)
+end
+
+local function isLocalPlayerCaptured()
+    return getStatsBool(LocalPlayer, "Captured")
+end
+
+local function RagdolState()
+    local value, valueObj = getStatsValue(LocalPlayer, "Ragdoll")
+    if valueObj then
+        return boolValue(value), "Ragdoll", value
+    end
+
+    return false, nil, nil
+end
+
+local function CrawlState()
+    local value, valueObj = getStatsValue(LocalPlayer, "IsCrawling")
+    if valueObj then
+        return boolValue(value), "IsCrawling", value
+    end
+
+    return false, nil, nil
+end
+
+local BarNames = { "HealthBarA", "HealthBarB", "HealthBarC", "HealthBarD" }
+
+local function ColorFix(value)
+    if value <= 1 then
+        return math.floor((value * 255) + 0.5)
+    end
+    return math.floor(value + 0.5)
+end
+
+local function getRgb(value)
+    if not value then
+        return nil, nil, nil
+    end
+    local r = nil
+    local g = nil
+    local b = nil
+    pcall(function()
+        r = value.R
+        g = value.G
+        b = value.B
+    end)
+    if r == nil and type(value) == "table" then
+        r = value[1] or value.r
+        g = value[2] or value.g
+        b = value[3] or value.b
+    end
+    r = ColorFix(r)
+    g = ColorFix(g)
+    b = ColorFix(b)
+    if r == nil or g == nil or b == nil then
+        return nil, nil, nil
+    end
+    return r, g, b
+end
+
+local function GetGUIrgb(instance)
+    local properties = { "Color", "BackgroundColor3", "ImageColor3", "TextColor3" }
+    for _, property in ipairs(properties) do
+        local r, g, b = getRgb(readProperty(instance, property))
+        if r ~= nil then
+            return r, g, b, property
+        end
+    end
+    return nil, nil, nil, nil
+end
+
+local function isCapturedHealthBarRgb(r, g, b)
+    return type(r) == "number"
+        and type(g) == "number"
+        and type(b) == "number"
+        and r <= 15
+        and g >= 110
+        and g <= 145
+        and b >= 240
+end
+
+local function readTextValue(instance)
+    local value = readProperty(instance, "Text")
+    if type(value) == "string" then
+        return value
+    end
+    local textObject = readProperty(instance, "Text")
+    value = readProperty(textObject, "Text")
+    if type(value) == "string" then
+        return value
+    end
+    value = readProperty(textObject, "Value")
+    if type(value) == "string" then
+        return value
+    end
+    return ""
+end
+
+local function trimText(text)
+    text = tostring(text or "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    return text
+end
+
+local function playerMatchesHealthBarText(player, text, exactOnly)
+    text = string.lower(trimText(text))
+    if text == "" or not player then
+        return false
+    end
+    local name = string.lower(tostring(readProperty(player, "Name") or ""))
+    local displayName = string.lower(tostring(readProperty(player, "DisplayName") or ""))
+    if text == name or (displayName ~= "" and text == displayName) then
+        return true
+    end
+    if exactOnly then
+        return false
+    end
+    if name ~= "" and string.find(text, name, 1, true) then
+        return true
+    end
+    if displayName ~= "" and string.find(text, displayName, 1, true) then
+        return true
+    end
+    if name ~= "" and string.find(name, text, 1, true) then
+        return true
+    end
+    return false
+end
+
+local function findPlayerFromHealthBarText(text)
+    for _, player in ipairs(Players and Players:GetPlayers() or {}) do
+        if player ~= LocalPlayer and playerMatchesHealthBarText(player, text, true) then
+            return player
+        end
+    end
+    for _, player in ipairs(Players and Players:GetPlayers() or {}) do
+        if player ~= LocalPlayer and playerMatchesHealthBarText(player, text, false) then
+            return player
+        end
+    end
+    return nil
+end
+
+local function getLocalStatusBars()
+    local playerGui = readProperty(LocalPlayer, "PlayerGui")
+    local screenGui = readProperty(playerGui, "ScreenGui")
+    return readProperty(screenGui, "StatusBars")
+end
+
+local function getHealthBar(statusBars, barName)
+    local healthBar = readProperty(statusBars, barName)
+    if not healthBar then
+        return nil
+    end
+    local bar = readProperty(healthBar, "Bar")
+    local r, g, b, colorProperty = GetGUIrgb(bar)
+    local text = trimText(readTextValue(healthBar))
+    local captured = isCapturedHealthBarRgb(r, g, b)
+    return {
+        name = barName,
+        healthBar = healthBar,
+        bar = bar,
+        text = text,
+        r = r,
+        g = g,
+        b = b,
+        colorProperty = colorProperty,
+        captured = captured,
+        player = findPlayerFromHealthBarText(text),
+    }
+end
+
+local function getHealthBarCaptureStateForPlayer(player)
+    local statusBars = getLocalStatusBars()
+    if not statusBars then
+        return nil, "statusbars missing"
+    end
+    for _, barName in ipairs(BarNames) do
+        local entry = getHealthBar(statusBars, barName)
+        if entry and playerMatchesHealthBarText(player, entry.text, false) then
+            return entry.captured == true, entry
+        end
+    end
+    return nil, "player bar missing"
+end
+
+local function isPlayerCapturedForSave(player)
+    local guiCaptured, guiInfo = getHealthBarCaptureStateForPlayer(player)
+    if guiCaptured ~= nil then
+        return guiCaptured
+    end
+    local statCaptured = getStatsBool(player, "Captured")
+    return statCaptured
+end
+
+local function getCP() -- get captured player from health bar
+    local statusBars = getLocalStatusBars()
+    if not statusBars then
+        return nil, nil, false
+    end
+
+    local seen = 0
+    for _, barName in ipairs(BarNames) do
+        local entry = getHealthBar(statusBars, barName)
+        if entry then
+            seen = seen + 1
+            if entry.captured and entry.player then
+                local character = entry.player.Character
+                local root = readProperty(character, "HumanoidRootPart")
+                if root then
+                    return entry.player, root, true
+                end
+            end
+        end
+    end
+
+    return nil, nil, seen > 0
+end
+
+local function getCapturedPlayerTarget()
+    local guiPlayer, guiRoot = getCP()
+    if guiPlayer and guiRoot then
+        return guiPlayer, guiRoot, "gui"
+    end
+
+    for _, player in ipairs(Players and Players:GetPlayers() or {}) do
+        if player ~= LocalPlayer then
+            local captured = getStatsBool(player, "Captured")
+            if captured then
+                local character = player.Character
+                local root = readProperty(character, "HumanoidRootPart")
+                if root then
+                    return player, root, "stats"
+                end
+            end
+        end
+    end
+
+    return nil, nil, "none"
+end
+
+local function getBeast()
+    for _, obj in ipairs(CharacterTargets()) do
+        if isBeastModel(obj) then
+            local root = readProperty(obj, "HumanoidRootPart")
+            if root then
+                return obj, root
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function getSaveCapturedPosition(root)
+    local pos = nil
+    pcall(function()
+        pos = root and root.Position or nil
+    end)
+    if not (pos and type(pos.X) == "number" and type(pos.Y) == "number" and type(pos.Z) == "number") then
+        return nil, pos
+    end
+    return vec3(pos.X, pos.Y - 4.5, pos.Z), pos
+end
+
+local function getAnnoyBeastFrontPosition(beastRoot)
+    if not beastRoot then
+        return nil
+    end
+    return beastRoot.Position + (beastRoot.CFrame.LookVector * 20)
+end
+
+local function getAnnoyBeastBackPosition(beastRoot)
+    if not beastRoot then
+        return nil
+    end
+    return beastRoot.Position - (beastRoot.CFrame.LookVector * 10)
+end
+
+local function getFlingOffsets()
+    if state.flingOffsets then
+        return state.flingOffsets
+    end
+    if not HttpService then
+        return nil
+    end
+    local response = httpGet("https://imtheo.lol/Offsets/Offsets.json")
+    if not response or response == "" then
+        return nil
+    end
+    local decodeOk, decoded = pcall(function()
+        return HttpService:JSONDecode(response)
+    end)
+    if decodeOk and type(decoded) == "table" and type(decoded.Offsets) == "table" then
+        state.flingOffsets = decoded.Offsets
+        return state.flingOffsets
+    end
+    return nil
+end
+
+local function getPrimitivePointerOffset(part, primitivePositionOffset)
+    if not part or not part.Address
+        or type(memory) ~= "table"
+        or type(memory.read_pointer) ~= "function"
+        or type(memory.readf32) ~= "function"
+        or type(primitivePositionOffset) ~= "number" then
+        return nil
+    end
+    for offset = 8, 1024, 8 do
+        local readPtrSuccess, _, ptrAddress = pcall(memory.read_pointer, part.Address + offset)
+        if readPtrSuccess and ptrAddress and ptrAddress > 10000 then
+            local readPosSuccess, _, memPosX = pcall(memory.readf32, ptrAddress + primitivePositionOffset)
+            if readPosSuccess and type(memPosX) == "number" and math.abs(memPosX - part.Position.X) < 0.1 then
+                return offset
+            end
+        end
+    end
+    return nil
+end
+
+local function stopFlingBeast()
+    Disconnect(state.FBConnection)
+    state.FBConnection = nil
+
+    local flingState = state.FBState
+    if not flingState then
+        return
+    end
+
+    if flingState.humanoid and flingState.humanoid.Parent
+        and flingState.autoRotateOffset
+        and flingState.originalAutoRotate ~= nil
+        and type(memory) == "table"
+        and type(memory.writeu8) == "function" then
+        pcall(memory.writeu8, flingState.humanoid.Address + flingState.autoRotateOffset, flingState.originalAutoRotate)
+    end
+    if flingState.localRoot and flingState.localRoot.Parent then
+        local zero = vec3(0, 0, 0)
+        if zero then
+            pcall(function()
+                flingState.localRoot.Velocity = zero
+            end)
+            pcall(function()
+                flingState.localRoot.RotVelocity = zero
+            end)
+        end
+        if flingState.originalCFrame then
+            pcall(function()
+                flingState.localRoot.CFrame = flingState.originalCFrame
+            end)
+        end
+    end
+    if flingState.primitiveAddress and flingState.angVelOffset then
+        local targetX = flingState.primitiveAddress + flingState.angVelOffset
+        if type(memory) == "table" and type(memory.writef32) == "function" then
+            pcall(memory.writef32, targetX, 0)
+            pcall(memory.writef32, targetX + 4, 0)
+            pcall(memory.writef32, targetX + 8, 0)
+        end
+    end
+    if type(flingState.collisions) == "table" then
+        for part, canCollide in pairs(flingState.collisions) do
+            if part and part.Parent then
+                pcall(function()
+                    part.CanCollide = canCollide == true
+                end)
+            end
+        end
+    end
+    state.FBState = nil
+end
+
+local function flingBeast()
+    stopFlingBeast()
+
+    local _, beastRoot = getBeast()
+    local character = getLocalCharacter()
+    local localRoot = readProperty(character, "HumanoidRootPart")
+    local humanoid = readProperty(character, "Humanoid")
+    if not beastRoot then
+        notify("Beast not found", 3)
+        return
+    end
+    if not character or not localRoot or not humanoid or not localRoot.Address or not humanoid.Address then
+        notify("Local character not ready", 3)
+        return
+    end
+
+    local offsets = getFlingOffsets()
+    local primitiveOffsets = offsets and offsets.Primitive
+    local humanoidOffsets = offsets and offsets.Humanoid
+    if type(primitiveOffsets) ~= "table" or type(humanoidOffsets) ~= "table" then
+        notify("Offsets unavailable", 3)
+        return
+    end
+
+    local primitiveOffset = getPrimitivePointerOffset(localRoot, primitiveOffsets.Position)
+    if not primitiveOffset then
+        notify("Primitive offset not found", 3)
+        return
+    end
+    if type(primitiveOffsets.AssemblyAngularVelocity) ~= "number" or type(humanoidOffsets.AutoRotate) ~= "number" then
+        notify("Required offsets unavailable", 3)
+        return
+    end
+
+    local collisions = {}
+    for _, part in ipairs(character:GetDescendants()) do
+        if part and part:IsA("BasePart") then
+            collisions[part] = part.CanCollide == true
+            pcall(function()
+                part.CanCollide = false
+            end)
+        end
+    end
+
+    local originalAutoRotate = nil
+    if type(memory) == "table" and type(memory.readu8) == "function" then
+        local ok, _, value = pcall(memory.readu8, humanoid.Address + humanoidOffsets.AutoRotate)
+        if ok then
+            originalAutoRotate = value
+        end
+    end
+    if type(memory) == "table" and type(memory.writeu8) == "function" then
+        pcall(memory.writeu8, humanoid.Address + humanoidOffsets.AutoRotate, 0)
+    end
+
+    local current = localRoot.CFrame
+    pcall(function()
+        local pos = beastRoot.Position
+        localRoot.CFrame = CFrame.new(pos.X, pos.Y, pos.Z)
+    end)
+
+    local startedAt = tick()
+    local flingSpeed = 120000
+    local angVelOffset = primitiveOffsets.AssemblyAngularVelocity
+    state.FBState = {
+        localRoot = localRoot,
+        humanoid = humanoid,
+        originalCFrame = current,
+        originalAutoRotate = originalAutoRotate,
+        autoRotateOffset = humanoidOffsets.AutoRotate,
+        collisions = collisions,
+        primitiveAddress = nil,
+        angVelOffset = angVelOffset,
+    }
+
+    if not PreSimulationSignal then
+        notify("RunService step signal unavailable", 3)
+        stopFlingBeast()
+        return
+    end
+
+    state.FBConnection = PreSimulationSignal:Connect(function()
+        if not state.running or (humanoid.Health or 0) <= 0 or not isDescendantOf(character, workspace) or not Parent(beastRoot) or (tick() - startedAt) >= 2 then
+            stopFlingBeast()
+            return
+        end
+
+        pcall(function()
+            local pos = beastRoot.Position
+            localRoot.CFrame = CFrame.new(pos.X, pos.Y, pos.Z)
+        end)
+
+        if type(memory) ~= "table" or type(memory.read_pointer) ~= "function" or type(memory.writef32) ~= "function" then
+            return
+        end
+
+        local readOk, _, livePrimitiveAddress = pcall(memory.read_pointer, localRoot.Address + primitiveOffset)
+        if not readOk or not livePrimitiveAddress or livePrimitiveAddress <= 10000 then
+            return
+        end
+        if state.FBState then
+            state.FBState.primitiveAddress = livePrimitiveAddress
+        end
+
+        local targetX = livePrimitiveAddress + angVelOffset
+        pcall(function()
+            for _ = 1, 2000 do
+                memory.writef32(targetX, 0)
+                memory.writef32(targetX + 4, flingSpeed)
+                memory.writef32(targetX + 8, 0)
+            end
+        end)
+    end)
+end
+
+local function setLocalWalkSpeed(speed)
+    local humanoid = getLocalHumanoid()
+    if not humanoid then
+        state.lastAppliedWalkSpeed = nil
+        state.lastWalkSpeedWriteAt = 0
+        return
+    end
+    local now = tick()
+    if state.lastAppliedWalkSpeed == speed and (now - (state.lastWalkSpeedWriteAt or 0)) < 0.05 then
+        return
+    end
+
+    humanoid.WalkSpeed = speed
+
+    local _, normalSpeedObj = getStatsValue(LocalPlayer, "NormalWalkSpeed")
+    if normalSpeedObj then
+        normalSpeedObj.Value = speed
+    end
+
+    state.lastAppliedWalkSpeed = speed
+    state.lastWalkSpeedWriteAt = now
+end
+
+local function updateBeastMovement()
+    local runnerCooldownEnabled = getBool("no_cooldown_runner")
+    local jumpSlowdownEnabled = getBool("no_jump_slowdown")
+    if not runnerCooldownEnabled and not jumpSlowdownEnabled then
+        state.lastAppliedWalkSpeed = nil
+        state.lastWalkSpeedWriteAt = 0
+        return
+    end
+    local crawling = CrawlState()
+    if crawling then
+        setLocalWalkSpeed(7)
+        return
+    end
+    local qPressed = false
+    if runnerCooldownEnabled then
+        qPressed = state.runnerKeyActive == true
+    end
+    if runnerCooldownEnabled and qPressed then
+        setLocalWalkSpeed(24)
+    elseif jumpSlowdownEnabled then
+        setLocalWalkSpeed(17)
+    else
+        setLocalWalkSpeed(16)
+    end
+end
+
+local function executeForceUnfreeze()
+    local humanoid = getLocalHumanoid()
+    if humanoid and humanoid.Address and type(memory) == "table" and type(memory.writei32) == "function" then
+        pcall(memory.writei32, humanoid.Address + 0x194, 0)
+        notify("Force Unfreeze sent; interaction may be unavailable until round ends", 4)
+    else
+        notify("Humanoid or memory.writei32 unavailable", 3)
+    end
+end
+
+local function executeEndRound()
+    if not isLocalPlayerBeastNow() then
+        notify("You must be Beast to end round", 3)
+        return
+    end
+    local humanoid = getLocalHumanoid()
+    if humanoid and humanoid.Address and type(memory) == "table" and type(memory.writei32) == "function" then
+        pcall(memory.writei32, humanoid.Address + 0x194, 0)
+        notify("End Round sent", 3)
+    else
+        notify("Humanoid or memory.writei32 unavailable", 3)
+    end
+end
+
+local INTERACT_KEY = Enum.KeyCode.E
+
+local function releaseInteractKey()
+    pcall(keyrelease, INTERACT_KEY)
+end
+
+local function shouldSendInteract()
+    return isrbxactive() == true
+end
+
+local function restoreSaveCapturedPosition()
+    if state.saveCapturedReturnCFrame then
+        local root = getLocalRoot()
+        if root then
+            pcall(function()
+                root.CFrame = state.saveCapturedReturnCFrame
+            end)
+        end
+    end
+    state.saveCapturedReturnCFrame = nil
+    state.saveCapturedTargetUserId = nil
+end
+
+local function resetSaveCaptured(restorePosition)
+    if state.saveCapturedReleaseAt then
+        releaseInteractKey()
+    end
+    state.saveCapturedReleaseAt = nil
+    state.nextSc = 0
+    if restorePosition then
+        restoreSaveCapturedPosition()
+    else
+        state.saveCapturedReturnCFrame = nil
+        state.saveCapturedTargetUserId = nil
+    end
+end
+
+local function resetAutoDo()
+    if state.autoPuzzkeRelease then
+        releaseInteractKey()
+    end
+    state.autoPuzzlePressed = false
+    state.autoPuzzlePending = nil
+    state.autoPuzzkeRelease = nil
+    state.nextPuzzle = 0
+end
+
+local function isAntiCaptureActive()
+    return state.threads.antiCapture == true and getBool("anti_capture_toggle") == true
+end
+
+local function reAntiCapture()
+    if type(state.antiCaptureCollisions) == "table" then
+        for part, canCollide in pairs(state.antiCaptureCollisions) do
+            if Parent(part) then
+                pcall(function()
+                    part.CanCollide = canCollide == true
+                end)
+            end
+        end
+    end
+    state.antiCaptureCollisions = nil
+    state.antiCaptureCollisionCharacter = nil
+end
+
+local function applyAntiCapture()
+    local character = getLocalCharacter()
+    if not character then
+        reAntiCapture()
+        return false
+    end
+
+    if state.antiCaptureCollisionCharacter ~= character then
+        reAntiCapture()
+        state.antiCaptureCollisionCharacter = character
+        state.antiCaptureCollisions = {}
+    elseif type(state.antiCaptureCollisions) ~= "table" then
+        state.antiCaptureCollisions = {}
+    end
+
+    local changed = 0
+    for _, part in ipairs(character:GetDescendants()) do
+        if part and part:IsA("BasePart") then
+            if state.antiCaptureCollisions[part] == nil then
+                local ok, canCollide = pcall(function()
+                    return part.CanCollide
+                end)
+                if ok then
+                    state.antiCaptureCollisions[part] = canCollide == true
+                end
+            end
+            local ok = pcall(function()
+                part.CanCollide = false
+            end)
+            if ok then
+                changed = changed + 1
+            end
+        end
+    end
+    return changed > 0
+end
+
+local function stopThread(id)
+    if id == "antiCapture" then
+        state.nextAnticapture = 0
+        reAntiCapture()
+    elseif id == "annoyBeast" then
+        state.nextAb = 0
+    elseif id == "saveCaptured" then
+        resetSaveCaptured(true)
+    elseif id == "autoDo" then
+        resetAutoDo()
+    end
+    state.threads[id] = nil
+end
+
+local function startAntiCapture()
+    state.threads.antiCapture = true
+    state.nextAnticapture = 0
+end
+
+local function startAnnoyBeast()
+    state.threads.annoyBeast = true
+    state.nextAb = 0
+end
+
+local function startSaveCaptured()
+    resetSaveCaptured(false)
+    state.threads.saveCaptured = true
+end
+
+local function startAutoDo()
+    resetAutoDo()
+    state.threads.autoDo = true
+end
+
+local function updateAntiCapture(now)
+    if not isAntiCaptureActive() then
+        reAntiCapture()
+        return
+    end
+    if now < (state.nextAnticapture or 0) then
+        return
+    end
+    state.nextAnticapture = now + 0.1
+
+    applyAntiCapture()
+end
+
+local function moveRootToPosition(root, targetPosition)
+    if not root or not targetPosition then
+        return false
+    end
+    local movedOk = pcall(function()
+        root.CFrame = CFrame.new(targetPosition.X, targetPosition.Y, targetPosition.Z)
+    end)
+    if not movedOk then
+        movedOk = pcall(function()
+            root.Position = targetPosition
+        end)
+    end
+    return movedOk
+end
+
+local function updateAnnoyBeast(now)
+    local frontEnabled = getBool("annoy_beast_front_toggle")
+    local backEnabled = getBool("annoy_beast_back_toggle")
+    if not state.threads.annoyBeast or (not frontEnabled and not backEnabled) then
+        return
+    end
+    if now < (state.nextAb or 0) then
+        return
+    end
+    state.nextAb = now + 0.06
+
+    local root = getLocalRoot()
+    local _, beastRoot = getBeast()
+    if root and beastRoot and not isLocalPlayerCaptured() and not isLocalPlayerBeastNow() and canLocalPlayerAct() then
+        local targetPosition = frontEnabled and getAnnoyBeastFrontPosition(beastRoot) or getAnnoyBeastBackPosition(beastRoot)
+        if targetPosition then
+            moveRootToPosition(root, targetPosition)
+        end
+    end
+end
+
+local function updateSaveCaptured(now)
+    if state.saveCapturedReleaseAt and now >= state.saveCapturedReleaseAt then
+        releaseInteractKey()
+        state.saveCapturedReleaseAt = nil
+    end
+
+    if not state.threads.saveCaptured or not getBool("save_captured_toggle") then
+        resetSaveCaptured(true)
+        return
+    end
+    if now < (state.nextSc or 0) then
+        return
+    end
+
+    local root = getLocalRoot()
+    local localCaptured = isLocalPlayerCaptured()
+    local localBeast = isLocalPlayerBeastNow()
+    local canAct = canLocalPlayerAct()
+
+    if localCaptured or localBeast or not canAct or not root then
+        restoreSaveCapturedPosition()
+        state.nextSc = now + 0.15
+        return
+    end
+
+    local targetPlayer, targetRoot = getCapturedPlayerTarget()
+    if targetPlayer and targetRoot then
+        if state.saveCapturedTargetUserId ~= targetPlayer.UserId or not state.saveCapturedReturnCFrame then
+            state.saveCapturedReturnCFrame = root.CFrame
+            state.saveCapturedTargetUserId = targetPlayer.UserId
+        end
+
+        local targetPosition = getSaveCapturedPosition(targetRoot)
+        if not targetPosition then
+            state.nextSc = now + 0.15
+            return
+        end
+
+        if pcall(function()
+            root.Position = targetPosition
+        end) and shouldSendInteract() and not state.saveCapturedReleaseAt then
+            pcall(keypress, INTERACT_KEY)
+            state.saveCapturedReleaseAt = now + 0.03
+        end
+
+        if not isPlayerCapturedForSave(targetPlayer) then
+            restoreSaveCapturedPosition()
+            state.nextSc = now + 0.1
+        else
+            state.nextSc = now + 0.06
+        end
+    else
+        restoreSaveCapturedPosition()
+        state.nextSc = now + 0.15
+    end
+end
+
+local function updateAutoDo(now)
+    if state.autoPuzzkeRelease and now >= state.autoPuzzkeRelease then
+        releaseInteractKey()
+        state.autoPuzzkeRelease = nil
+        state.autoPuzzlePressed = true
+    end
+
+    if not state.threads.autoDo or not getBool("auto_do_toggle") then
+        resetAutoDo()
+        return
+    end
+
+    if state.autoPuzzlePending and now >= state.autoPuzzlePending then
+        state.autoPuzzlePending = nil
+        local activeWindow = shouldSendInteract()
+        if activeWindow then
+            pcall(keypress, INTERACT_KEY)
+            state.autoPuzzkeRelease = now + 0.05
+        end
+    end
+
+    if now < (state.nextPuzzle or 0) then
+        return
+    end
+    state.nextPuzzle = now + 0.1
+
+    local playerGui = readProperty(LocalPlayer, "PlayerGui")
+    local screenGui = readProperty(playerGui, "ScreenGui")
+    local timingCircle = readProperty(screenGui, "TimingCircle")
+    local timingPin = readProperty(timingCircle, "TimingPin")
+    local timingBase = readProperty(timingCircle, "TimingBase")
+    if not timingCircle
+        or not timingPin
+        or not timingBase
+        or type(memory) ~= "table"
+        or type(memory.readu8) ~= "function"
+        or type(memory.readf32) ~= "function" then
+        state.autoPuzzlePressed = false
+        state.autoPuzzlePending = nil
+        return
+    end
+
+    local circleAddress = readProperty(timingCircle, "Address")
+    local pinAddress = readProperty(timingPin, "Address")
+    local baseAddress = readProperty(timingBase, "Address")
+    if type(circleAddress) ~= "number" or type(pinAddress) ~= "number" or type(baseAddress) ~= "number" then
+        state.autoPuzzlePressed = false
+        state.autoPuzzlePending = nil
+        return
+    end
+
+    local ok, readVisibleOk, circleVisible = pcall(memory.readu8, circleAddress + 0x5ad)
+    if circleVisible == nil and type(readVisibleOk) == "number" then
+        circleVisible = readVisibleOk
+    end
+    if not ok or (circleVisible ~= 1 and circleVisible ~= true) then
+        state.autoPuzzlePressed = false
+        state.autoPuzzlePending = nil
+        return
+    end
+
+    local pinOk, pinReadOk, pinRotation = pcall(memory.readf32, pinAddress + 0x188)
+    local baseOk, baseReadOk, baseRotation = pcall(memory.readf32, baseAddress + 0x188)
+    if pinRotation == nil and type(pinReadOk) == "number" then
+        pinRotation = pinReadOk
+    end
+    if baseRotation == nil and type(baseReadOk) == "number" then
+        baseRotation = baseReadOk
+    end
+    if not pinOk or not baseOk or type(pinRotation) ~= "number" or type(baseRotation) ~= "number" then
+        return
+    end
+
+    local diff = math.abs(pinRotation - baseRotation)
+    if diff > 180 then
+        diff = 360 - diff
+    end
+    if diff <= 10.5 and not state.autoPuzzlePressed and not state.autoPuzzlePending and not state.autoPuzzkeRelease then
+        state.autoPuzzlePending = now + 0.08
+    end
+end
+
+local function updateAutomation(now)
+    pcall(updateAntiCapture, now)
+    pcall(updateAnnoyBeast, now)
+    pcall(updateSaveCaptured, now)
+    pcall(updateAutoDo, now)
+end
+
+local function drawObjectLabel(part, label, color)
+    if not part then
+        return false
+    end
+    local pos = part.Position
+    local target = pos and vec3(pos.X, pos.Y + 1.5, pos.Z) or part
+    local point, visible = projectToScreen(target)
+    if not visible or not point then
+        return false
+    end
+    return drawText2d(point.X - 18, point.Y - 16, label, color, 13)
+end
+
+local function getComputerEspColorAndLabel(screen)
+    local hideHacked = getBool("hide_hacked_pcs")
+    local hideErrored = getBool("hide_error_pcs")
+    local sourceColor = screen and screen.Color
+    local r = sourceColor and sourceColor.R or 13
+    local g = sourceColor and sourceColor.G or 105
+    local b = sourceColor and sourceColor.B or 172
+    if r <= 1 and g <= 1 and b <= 1 then
+        r = math.floor((r * 255) + 0.5)
+        g = math.floor((g * 255) + 0.5)
+        b = math.floor((b * 255) + 0.5)
+    else
+        r = math.floor(r + 0.5)
+        g = math.floor(g + 0.5)
+        b = math.floor(b + 0.5)
+    end
+
+    local label = "PC Hacked"
+    local hidden = false
+    if r == 13 and g == 105 and b == 172 then
+        label = "PC Hackable"
+    elseif r == 196 and g == 40 and b == 28 then
+        if hideErrored then
+            label = "PC Hackable"
+            r, g, b = 13, 105, 172
+        else
+            label = "PC Errored"
+        end
+    elseif hideHacked then
+        hidden = true
+    end
+
+    if hidden then
+        return nil, nil
+    end
+    return label, color4(r, g, b, 1) or EspColors.pc
+end
+
+local function drawCharacterEsp()
+    local playerEspEnabled = getBool("npc_player_esp")
+    local beastEspEnabled = getBool("npc_beast_esp")
+    if not playerEspEnabled and not beastEspEnabled then
+        return
+    end
+
+    local localCharacter = getLocalCharacter()
+    local targets = CharacterTargets()
+    for _, model in ipairs(targets) do
+        local isLocalModel = model == localCharacter or (LocalPlayer and tostring(model.Name) == tostring(LocalPlayer.Name))
+        if isFtfCharacterModel(model) and not isLocalModel then
+            local isBeast = isBeastModel(model)
+            local shouldShow = (isBeast and beastEspEnabled) or ((not isBeast) and playerEspEnabled)
+            if shouldShow then
+                local root = readProperty(model, "HumanoidRootPart")
+                local head = readProperty(model, "Head") or root
+                if root and head and head.Position and root.Position then
+                    local headTarget = vec3(head.Position.X, head.Position.Y + 0.6, head.Position.Z)
+                    local footTarget = vec3(root.Position.X, root.Position.Y - 3.2, root.Position.Z)
+                    local headPoint, headVisible = projectToScreen(headTarget or head)
+                    local footPoint, footVisible = projectToScreen(footTarget or root)
+                    if headVisible and footVisible and headPoint and footPoint then
+                        local boxHeight = math.max(18, math.abs(footPoint.Y - headPoint.Y))
+                        local boxWidth = math.max(12, math.floor(boxHeight * 0.55))
+                        local boxX = math.floor(headPoint.X - (boxWidth / 2))
+                        local boxY = math.floor(headPoint.Y)
+                        local color = isBeast and EspColors.beast or EspColors.player
+                        drawRect2d(boxX, boxY, boxWidth, boxHeight, color)
+                        drawText2d(boxX, boxY - 16, tostring(model.Name or "Player"), color, 13)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function drawMapEsp()
+    if getBool("pc_esp") then
+        for _, screen in ipairs(getComputerTargets()) do
+            local label, color = getComputerEspColorAndLabel(screen)
+            if label and color then
+                drawObjectLabel(screen, label, color)
+            end
+        end
+    end
+
+    if getBool("freeze_pod_esp") then
+        for _, part in ipairs(refreshFreezePodCache(false)) do
+            drawObjectLabel(part, "FreezePod", EspColors.pod)
+        end
+    end
+
+    if getBool("exit_door_esp") then
+        for _, part in ipairs(refreshExitDoorCache(false)) do
+            drawObjectLabel(part, "ExitDoor", EspColors.door)
+        end
+    end
+end
+
+local function drawEspOverlay()
+    if type(immediate) ~= "table" or type(rendering) ~= "table" then
+        return
+    end
+    drawCharacterEsp()
+    drawMapEsp()
+end
+
+local function refreshStatus(force)
+    local now = tick()
+    if not force and (now - (state.lastStatusRefresh or 0)) < 0.5 then
+        return
+    end
+    state.lastStatusRefresh = now
+
+    local characters = CharacterTargets()
+    local pcEspEnabled = getBool("pc_esp")
+    local podEspEnabled = getBool("freeze_pod_esp")
+    local doorEspEnabled = getBool("exit_door_esp")
+    local computers = (force or pcEspEnabled) and getComputerTargets() or (state.computerCache or {})
+    local pods = (force or podEspEnabled) and refreshFreezePodCache(false) or (state.freezePodCache or {})
+    local doors = (force or doorEspEnabled) and refreshExitDoorCache(false) or (state.exitDoorCache or {})
+    local beastName = "Unknown"
+    for _, model in ipairs(characters) do
+        if isBeastModel(model) then
+            beastName = tostring(model.Name or "Beast")
+            break
+        end
+    end
+
+    SetLabel(state.labels.status, "Status: " .. tostring(state.statusText or "Ready"))
+    SetLabel(state.labels.counts, string.format(
+        "Targets: players=%d | beast=%s | PCs=%d | pods=%d | doors=%d",
+        #characters,
+        beastName,
+        #computers,
+        #pods,
+        #doors
+    ))
+
+    local espEnabled = getBool("npc_player_esp") or getBool("npc_beast_esp") or pcEspEnabled or podEspEnabled or doorEspEnabled
+    if espEnabled then
+        local overlayReady = type(immediate) == "table" and type(rendering) == "table"
+        SetLabel(state.labels.esp, overlayReady and "ESP: on" or "ESP: unavailable")
+    else
+        SetLabel(state.labels.esp, "ESP: off")
+    end
+
+end
+
+local tab = gui.add_tab(tab_name, { icon = Enum.TabIcon.Hammer })
+
+local statusCat = tab:add_category("Status")
+state.labels.status = statusCat:add_label("Status: Ready")
+state.labels.counts = statusCat:add_label("Targets: loading")
+statusCat:add_button("Refresh Targets", function()
+    refreshCCache(true)
+    refreshComputerCache(true)
+    refreshFreezePodCache(true)
+    refreshExitDoorCache(true)
+    refreshStatus(true)
+end)
+
+local espCat = tab:add_category("ESP")
+state.labels.esp = espCat:add_label("ESP: off")
+state.controls.npc_player_esp = espCat:add_toggle("Player ESP", false, function()
+    refreshStatus(true)
+end)
+state.controls.npc_beast_esp = espCat:add_toggle("Beast ESP", false, function()
+    refreshStatus(true)
+end)
+state.controls.pc_esp = espCat:add_toggle("PC ESP", false, function()
+    refreshStatus(true)
+end)
+state.controls.hide_hacked_pcs = espCat:add_toggle("Hide Hacked PCs", false, function()
+    refreshStatus(true)
+end)
+state.controls.hide_error_pcs = espCat:add_toggle("Hide Error PCs", false, function()
+    refreshStatus(true)
+end)
+state.controls.freeze_pod_esp = espCat:add_toggle("Freeze Pod ESP", false, function()
+    refreshStatus(true)
+end)
+state.controls.exit_door_esp = espCat:add_toggle("Exit Door ESP", false, function()
+    refreshStatus(true)
+end)
+
+local automationCat = tab:add_category("Automation")
+state.controls.auto_do_toggle = automationCat:add_toggle("Auto PC Puzzle", false, function(value)
+    if value then
+        startAutoDo()
+        notify("Auto PC Puzzle on", 2)
+    else
+        stopThread("autoDo")
+        notify("Auto PC Puzzle off", 2)
+    end
+end)
+state.controls.anti_capture_toggle = automationCat:add_toggle("Anti-Capture", false, function(value)
+    if value then
+        startAntiCapture()
+        notify("Anti-Capture on", 2)
+    else
+        stopThread("antiCapture")
+        notify("Anti-Capture off", 2)
+    end
+end)
+state.controls.anti_capture_key_bind = automationCat:add_keybind("Anti-Capture Key", Enum.KeyCode.X, Enum.KeybindMode.PressAndHold)
+state.controls.anti_capture_key_bind:on_activated(function(active)
+    if active ~= true then
+        return
+    end
+    state.controls.anti_capture_toggle:set_boolean(not getBool("anti_capture_toggle"))
+end)
+state.controls.save_captured_toggle = automationCat:add_toggle("Save Captured", false, function(value)
+    if value then
+        startSaveCaptured()
+        notify("Save Captured on", 2)
+    else
+        stopThread("saveCaptured")
+        notify("Save Captured off", 2)
+    end
+end)
+automationCat:add_button("Force Unfreeze", executeForceUnfreeze)
+
+local beastCat = tab:add_category("Beast")
+state.controls.no_jump_slowdown = beastCat:add_toggle("No Jump Slowdown", false)
+state.controls.no_cooldown_runner = beastCat:add_toggle("No Cooldown Runner Only", false)
+state.controls.runner_key_bind = beastCat:add_keybind("Runner Key", Enum.KeyCode.Q, Enum.KeybindMode.PressAndHold)
+state.controls.runner_key_bind:on_activated(function(active)
+    state.runnerKeyActive = active == true
+end)
+beastCat:add_button("End Round", executeEndRound)
+
+local trollCat = tab:add_category("Troll")
+local function applyAnnoyBeastToggle()
+    if getBool("annoy_beast_front_toggle") or getBool("annoy_beast_back_toggle") then
+        startAnnoyBeast()
+        notify("Annoy Beast on", 2)
+    else
+        stopThread("annoyBeast")
+        notify("Annoy Beast off", 2)
+    end
+end
+state.controls.annoy_beast_front_toggle = trollCat:add_toggle("Annoy Beast Front", false, function()
+    applyAnnoyBeastToggle()
+end)
+state.controls.annoy_beast_back_toggle = trollCat:add_toggle("Annoy Beast Back", false, function()
+    applyAnnoyBeastToggle()
+end)
+trollCat:add_button("Fling Beast", flingBeast)
+
+setVisible("hide_hacked_pcs", true)
+setVisible("hide_error_pcs", true)
+
+refreshStatus(true)
+
+if HeartbeatSignal then
+    local connection = HeartbeatSignal:Connect(function()
+        if not state.running then
+            return
+        end
+        local now = tick()
+        pcall(updateBeastMovement)
+        pcall(updateAutomation, now)
+        pcall(refreshStatus, false)
+    end)
+    table.insert(state.connections, connection)
+else
+    notify("RunService loop signal unavailable; automation disabled", 4)
+end
+
+if PreRenderSignal then
+    local connection = PreRenderSignal:Connect(function()
+        if not state.running then
+            return
+        end
+        pcall(drawEspOverlay)
+    end)
+    table.insert(state.connections, connection)
+else
+    SetLabel(state.labels.esp, "ESP error")
+end
+
+ENV.__ftf = function()
+    state.running = false
+    stopThread("autoDo")
+    stopThread("antiCapture")
+    reAntiCapture()
+    stopThread("saveCaptured")
+    stopThread("annoyBeast")
+    stopThread("mainLoop")
+    stopFlingBeast()
+    for _, connection in ipairs(state.connections) do
+        Disconnect(connection)
+    end
+    state.connections = {}
+    pcall(function()
+        gui.remove_tab(tab_name)
+    end)
+end
+
+refreshStatus(true)
+notify("Loaded " .. version, 2)
