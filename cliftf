@@ -1244,13 +1244,13 @@ local function updateBeastMovement()
     end
 end
 
-local function executeForceUnfreeze()
+local function ForceUnfreeze()
     local humanoid = getLocalHumanoid()
     if humanoid and humanoid.Address and type(memory) == "table" and type(memory.writei32) == "function" then
         pcall(memory.writei32, humanoid.Address + 0x194, 0)
-        notify("Force Unfreeze sent; interaction may be unavailable until round ends", 4)
+        notify("interaction unavailable until round ends", 4)
     else
-        notify("Humanoid or memory.writei32 unavailable", 3)
+        notify("Humanoid unavailable", 3)
     end
 end
 
@@ -1832,7 +1832,7 @@ state.controls.save_captured_toggle = automationCat:add_toggle("Save Captured", 
         notify("Save Captured off", 2)
     end
 end)
-automationCat:add_button("Force Unfreeze", executeForceUnfreeze)
+automationCat:add_button("Force Unfreeze", ForceUnfreeze)
 
 local beastCat = tab:add_category("Beast")
 state.controls.no_jump_slowdown = beastCat:add_toggle("No Jump Slowdown", false)
