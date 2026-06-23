@@ -332,7 +332,7 @@ local function httpGet(url)
     return nil
 end
 
-local function isFtfCharacterModel(model)
+local function CharacterModel(model)
     return model and model:IsA("Model") and readProperty(model, "HumanoidRootPart") ~= nil
 end
 
@@ -349,7 +349,7 @@ local function isBeastModel(model)
 end
 
 local function isValidFtfCharacterTarget(model)
-    return isFtfCharacterModel(model) and isDescendantOf(model, workspace)
+    return CharacterModel(model) and isDescendantOf(model, workspace)
 end
 
 local function refreshCCache(force)
@@ -1661,7 +1661,7 @@ local function drawCharacterEsp()
     local targets = CharacterTargets()
     for _, model in ipairs(targets) do
         local isLocalModel = model == localCharacter or (LocalPlayer and tostring(model.Name) == tostring(LocalPlayer.Name))
-        if isFtfCharacterModel(model) and not isLocalModel then
+        if CharacterModel(model) and not isLocalModel then
             local isBeast = isBeastModel(model)
             local shouldShow = (isBeast and beastEspEnabled) or ((not isBeast) and playerEspEnabled)
             if shouldShow then
